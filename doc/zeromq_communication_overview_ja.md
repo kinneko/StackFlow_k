@@ -139,7 +139,8 @@ graph TD
     %% TCP Interaction (Conceptual)
     %% Or directly to a specific unit if configured
     TCP_Interface -- "TCP Request" --> SysModule 
-    SysModule -- "Forwards to Unit / ZMQ" --> UnitN %% Example
+    %% Example
+    SysModule -- "Forwards to Unit / ZMQ" --> UnitN 
     UnitN -- "Response via ZMQ/SysModule" --> TCP_Interface
 
     %% Unit RPC Servers
