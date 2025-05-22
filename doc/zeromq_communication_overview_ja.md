@@ -94,16 +94,16 @@ graph TD
     end
 
     subgraph "StackFlow System"
-        SysModule["Sys Module<br>(RPC Server, Config DB)"]
+        SysModule["Sys Module (RPC Server, Config DB)"]
 
-        UnitA["Unit A<br>(StackFlow Instance)"]
-        UnitB["Unit B<br>(StackFlow Instance)"]
-        UnitN["Unit N<br>(StackFlow Instance)"]
+        UnitA["Unit A (StackFlow Instance)"]
+        UnitB["Unit B (StackFlow Instance)"]
+        UnitN["Unit N (StackFlow Instance)"]
 
         subgraph "ZMQ Sockets (IPC / TCP)"
             ZmqRpcSys["ipc:///tmp/rpc.sys"]
             ZmqPubSub1["ipc/tcp pub/sub channel 1"]
-            ZmqPushUart["ipc:///tmp/llm/5556.sock<br>(UART PUSH)"]
+            ZmqPushUart["ipc:///tmp/llm/5556.sock (UART PUSH)"]
             ZmqRpcUnitA["ipc:///tmp/rpc.UnitA"]
             ZmqRpcUnitB["ipc:///tmp/rpc.UnitB"]
             ZmqRpcUnitN["ipc:///tmp/rpc.UnitN"]
@@ -111,39 +111,40 @@ graph TD
     end
 
     %% Sys Module Interactions
-    UnitA -->|RPC: register_unit, sql_select| SysModule
-    UnitB -->|RPC: register_unit, sql_select| SysModule
-    UnitN -->|RPC: register_unit, sql_select| SysModule
+    UnitA -- "RPC: register_unit, sql_select" --> SysModule
+    UnitB -- "RPC: register_unit, sql_select" --> SysModule
+    UnitN -- "RPC: register_unit, sql_select" --> SysModule
 
-    SysModule -->|Manages/Provides| ZmqRpcSys
-    SysModule -->|Manages/Provides| ZmqPubSub1
-    SysModule -->|Manages/Provides| ZmqPushUart
-    SysModule -->|Manages/Provides| ZmqRpcUnitA
-    SysModule -->|Manages/Provides| ZmqRpcUnitB
-    SysModule -->|Manages/Provides| ZmqRpcUnitN
+    SysModule -- "Manages/Provides" --> ZmqRpcSys
+    SysModule -- "Manages/Provides" --> ZmqPubSub1
+    SysModule -- "Manages/Provides" --> ZmqPushUart
+    SysModule -- "Manages/Provides" --> ZmqRpcUnitA
+    SysModule -- "Manages/Provides" --> ZmqRpcUnitB
+    SysModule -- "Manages/Provides" --> ZmqRpcUnitN
+
 
     %% Unit to Unit Interactions (via ZMQ Sockets managed by SysModule)
-    UnitA -->|ZMQ RPC Call| ZmqRpcUnitB
-    UnitB -->|ZMQ RPC Response| ZmqRpcUnitA
+    UnitA -- "ZMQ RPC Call" --> ZmqRpcUnitB
+    UnitB -- "ZMQ RPC Response" --> ZmqRpcUnitA
 
-    UnitA -->|ZMQ PUB| ZmqPubSub1
-    UnitB -->|ZMQ SUB| ZmqPubSub1
-    UnitN -->|ZMQ SUB| ZmqPubSub1
+    UnitA -- "ZMQ PUB" --> ZmqPubSub1
+    UnitB -- "ZMQ SUB" --> ZmqPubSub1
+    UnitN -- "ZMQ SUB" --> ZmqPubSub1
 
     %% UART Interaction
-    SysModule -->|ZMQ PUSH| ZmqPushUart
-    UnitA -->|ZMQ PUSH (via llm_channel_obj)| ZmqPushUart
+    SysModule -- "ZMQ PUSH" --> ZmqPushUart
+    UnitA -- "ZMQ PUSH (via llm_channel_obj)" --> ZmqPushUart
     ZmqPushUart --> UART_Interface
 
     %% TCP Interaction (Conceptual)
-    TCP_Interface -->|TCP Request| SysModule
-    SysModule -->|Forwards to Unit / ZMQ| UnitN
-    UnitN -->|Response via ZMQ/SysModule| TCP_Interface
+    TCP_Interface -- "TCP Request" --> SysModule % Or directly to a specific unit if configured
+    SysModule -- "Forwards to Unit / ZMQ" --> UnitN % Example
+    UnitN -- "Response via ZMQ/SysModule" --> TCP_Interface
 
     %% Unit RPC Servers
-    UnitA -->|Hosts RPC Server| ZmqRpcUnitA
-    UnitB -->|Hosts RPC Server| ZmqRpcUnitB
-    UnitN -->|Hosts RPC Server| ZmqRpcUnitN
+    UnitA -- "Hosts RPC Server" --> ZmqRpcUnitA
+    UnitB -- "Hosts RPC Server" --> ZmqRpcUnitB
+    UnitN -- "Hosts RPC Server" --> ZmqRpcUnitN
 
     classDef sys fill:#f9f,stroke:#333,stroke-width:2px;
     classDef unit fill:#bbf,stroke:#333,stroke-width:2px;
@@ -154,7 +155,6 @@ graph TD
     class UnitA,UnitB,UnitN unit;
     class ZmqRpcSys,ZmqPubSub1,ZmqPushUart,ZmqRpcUnitA,ZmqRpcUnitB,ZmqRpcUnitN zmq;
     class UART_Interface,TCP_Interface external;
-
 ```
 
 **図の説明:**
