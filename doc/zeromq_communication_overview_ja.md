@@ -137,8 +137,9 @@ graph TD
     ZmqPushUart --> UART_Interface
 
     %% TCP Interaction (Conceptual)
-    TCP_Interface -- "TCP Request" --> SysModule % Or directly to a specific unit if configured
-    SysModule -- "Forwards to Unit / ZMQ" --> UnitN % Example
+    %% Or directly to a specific unit if configured
+    TCP_Interface -- "TCP Request" --> SysModule 
+    SysModule -- "Forwards to Unit / ZMQ" --> UnitN %% Example
     UnitN -- "Response via ZMQ/SysModule" --> TCP_Interface
 
     %% Unit RPC Servers
