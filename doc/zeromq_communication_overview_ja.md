@@ -167,6 +167,56 @@ graph TD
 *   **UART Interface** へは、主に `ZmqPushUart` を介してデータがPUSHされます。これはSys Moduleまたは他のUnitから開始されることがあります。
 *   **TCP Interface** は、外部ネットワークからの接続点として機能し、Sys Moduleを介して内部のUnitと連携する概念を示しています。具体的な実装はUnitや設定に依存します。
 
-## 5. まとめ
+## 5. 全体コンポーネント相互接続図（例）
+
+以下は、主要な音声・言語処理コンポーネント間の典型的なデータフローとZeroMQを介した相互接続の例を示す図です。各コンポーネントは `StackFlow` Unitとして動作し、Sys Moduleによって管理・連携されます。
+
+```mermaid
+graph LR
+    subgraph "System Core"
+        Sys["Sys Module (RPC Server, Config DB)"]
+    end
+
+    subgraph "Audio Processing Pipeline"
+        direction LR
+        AudioIn["Audio Input (HW Interface)"] --> AudioUnit["Audio Unit (StackFlow)"]
+        AudioUnit -- "PCM Stream (ZMQ PUB/SUB or PUSH/PULL)" --> KWSUnit["KWS Unit (StackFlow)"]
+        KWSUnit -- "Keyword Detected (ZMQ PUB/SUB)" --> ASRUnit["ASR Unit (StackFlow)"]
+        AudioUnit -- "PCM Stream (ZMQ PUB/SUB or PUSH/PULL)" --> ASRUnit
+        ASRUnit -- "Recognized Text (ZMQ RPC Call or PUB/SUB)" --> LLMUnit["LLM Unit (StackFlow)"]
+        LLMUnit -- "Response Text (ZMQ RPC Call or PUB/SUB)" --> TTSUnit["TTS Unit (StackFlow)"]
+        TTSUnit -- "Synthesized Speech (ZMQ PUSH/PULL)" --> AudioOut["Audio Output (HW Interface)"]
+    end
+
+    %% Connections to Sys Module for RPC (registration, config, service discovery)
+    AudioUnit -. "RPC" .-> Sys
+    KWSUnit -. "RPC" .-> Sys
+    ASRUnit -. "RPC" .-> Sys
+    LLMUnit -. "RPC" .-> Sys
+    TTSUnit -. "RPC" .-> Sys
+
+    classDef sys fill:#f9f,stroke:#333,stroke-width:2px;
+    classDef unit fill:#bbf,stroke:#333,stroke-width:2px;
+    classDef io fill:#ccf,stroke:#333,stroke-width:2px;
+
+    class Sys sys;
+    class AudioUnit,KWSUnit,ASRUnit,LLMUnit,TTSUnit unit;
+    class AudioIn,AudioOut io;
+```
+
+**図の説明:**
+
+*   **Audio Input**: マイクなどのハードウェアから音声が入力されます。
+*   **Audio Unit**: 入力された音声を処理し、PCMストリームとして他のコンポーネント（KWS Unit, ASR Unit）にZeroMQを介して送信します。
+*   **KWS Unit (Keyword Spotting)**: 音声ストリームを監視し、特定のキーワードを検出します。キーワードが検出されると、ASR Unitに通知します。
+*   **ASR Unit (Automatic Speech Recognition)**: KWS Unitからの通知、または直接Audio Unitからの音声ストリームを受けて、音声認識を行いテキストに変換します。
+*   **LLM Unit (Large Language Model)**: ASR Unitから受け取ったテキストを解釈し、応答テキストを生成します。
+*   **TTS Unit (Text-to-Speech)**: LLM Unitからの応答テキストを音声に合成し、Audio Outputに出力します。
+*   **Audio Output**: スピーカーなどのハードウェアから合成音声が出力されます。
+*   **Sys Module**: これら全てのUnitの動作を管理し、設定情報の提供やUnit間のRPC通信を仲介します。図中では、各UnitからSys ModuleへのRPC接続を点線で示しています。実際のデータフロー（音声やテキスト）はUnit間で直接ZeroMQ（PUB/SUB, PUSH/PULL, RPCコールなど）で行われます。
+
+この図はあくまで一例であり、実際の接続やデータの流れは具体的なアプリケーションの要件によって変わることがあります。
+
+## 6. まとめ
 
 本システムのプロセス間通信は、ZeroMQの柔軟な通信パターンと、Sys Moduleによる集中管理を組み合わせることで、スケーラブルで疎結合なモジュール連携を実現しています。JSON形式のメッセージプロトコルにより、異なるプログラミング言語で書かれたモジュール間の連携も比較的容易になっています (ただし、本リポジトリでは主にC++が使用されています)。
