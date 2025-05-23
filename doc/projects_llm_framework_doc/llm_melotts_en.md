@@ -1,484 +1,353 @@
-# llm-melotts (MeloTTS Text-to-Speech)
+# llm-melotts
 
-The `llm-melotts` unit provides text-to-speech (TTS) services, leveraging NPU acceleration for some models. It converts input text into audible speech and supports models for various languages, including English, Japanese, and Chinese.
+Text-to-speech unit accelerated by NPU, used to provide text-to-speech services. It supports both Chinese and English
+models for text-to-speech conversion.
 
-## General API Call Conventions
+## setup
 
-API calls to `llm-melotts` are made via JSON messages.
+Configure the unit.
 
-### Request Structure
-
-A standard request to an `llm-melotts` API follows this structure:
-
-```json
-{
-  "request_id": "client_generated_uuid_or_counter",
-  "work_id": "melotts_or_melotts.instance_id",
-  "action": "api_action_name",
-  "object": "optional_object_type_string", // If applicable
-  "data": { /* API-specific payload */ }     // Or string for some APIs
-}
-```
-
--   `request_id` (string, mandatory): A unique client-generated identifier for correlating requests with responses.
--   `work_id` (string, mandatory):
-    -   For initial setup or general queries: `"melotts"`.
-    -   For operations on a specific TTS task instance: `"melotts.XXXX"` (e.g., `"melotts.1003"`), where `XXXX` is the instance ID returned by a successful `setup` call.
--   `action` (string, mandatory): The API action to invoke (e.g., `"setup"`, `"inference"`).
--   `object` (string, optional): Specifies the type or context of the data being sent (e.g., `"melotts.setup"`, `"melotts.utf-8"`).
--   `data` (object or string, optional): The payload for the API call.
-
-### Response Structure
-
-**Success Response (for most API calls):**
-
-Indicates the API call was accepted and processed successfully.
+Send JSON:
 
 ```json
 {
-  "request_id": "mirrored_from_request",
-  "work_id": "melotts_or_melotts.instance_id", // Mirrored or updated
-  "action": "api_action_name",                // Mirrored from the request
-  "created": 1678886400,                      // Integer: Unix timestamp of response generation
-  "code": 0,                                  // Integer: 0 indicates success
-  "message": "OK",                            // String: Success message
-  "data": { /* API-specific data */ }         // Optional: Payload returned by the API
-}
-```
--   For the `inference` API, this synchronous response only acknowledges the request; the actual synthesized audio is sent asynchronously or played back.
--   If an API call results in the creation of a new task instance (e.g., `setup`), the `work_id` in the response and in `data.work_id` will be the new instance ID.
-
-**Error Response:**
-
-Indicates a failure during API call processing.
-
-```json
-{
-  "request_id": "mirrored_from_request",
-  "work_id": "melotts_or_melotts.instance_id",
-  "action": "api_action_name",        // Mirrored from the request
-  "created": 1678886400,              // Integer: Unix timestamp of response generation
-  "error": {
-    "code": -1,                       // Integer: Non-zero error code
-    "message": "Error description"    // String: Detailed error message
-  }
-}
-```
-
-**Common Error Codes:**
-
--   `-2`: Invalid JSON format in the request `data`.
--   `-3`: TTS engine or NPU initialization failed.
--   `-5`: Model loading failed (e.g., model files, lexicon, or phoneme data not found).
--   `-6`: Specified TTS task instance (e.g., `"melotts.1003"`) does not exist.
--   `-11`: Generic error during speech synthesis or internal processing.
--   `-20`: Error related to input source linking or data subscription.
--   `-21`: Task limit reached (typically, only one MeloTTS instance is supported).
--   `-23`: Error processing input text (e.g., text too long, tokenization/phonemization issues).
--   `-25`: Error during audio playback via `llm_audio` unit (if `enaudio` is true).
-
-## Data Input and Output (Text and Synthesized Speech)
-
-### Input Data (Text for Synthesis)
-
-The `llm-melotts` unit can receive text for synthesis in several ways:
-
-1.  **Via `inference` API to a specific `melotts.XXXX` instance:**
-    *   **Non-streaming text (`object: "melotts.utf-8"`)**:
-        -   The `data` field is a single string containing the full text to be synthesized.
-    *   **Streaming text (`object: "melotts.utf-8.stream"`)**:
-        -   The `data` field is a JSON object: `{"index": <integer>, "delta": "<text_chunk>", "finish": <boolean>}`.
-        -   Text is accumulated internally. Synthesis of audio segments typically occurs when punctuation marks (like comma, period, exclamation mark, question mark) are encountered in the accumulated text, or when `finish` is `true`.
-
-2.  **Via Linked Units (configured in `setup` API's `input` parameter):**
-    *   **`"tts.utf-8"` or `"tts.utf-8.stream"`**: The instance listens for text sent to its own `work_id` using the `inference` API as described above. (Note: The current documentation uses `tts.utf-8` for direct input; this should be understood as targeting the `melotts` unit itself).
-    *   **`"llm.XXXX"` or `"vlm.XXXX"`**: The MeloTTS instance subscribes to the output of a specified LLM or VLM unit. The text generated by these units is processed as input for synthesis, respecting punctuation for segmentation.
-    *   **`"kws.XXXX"`**: The MeloTTS instance subscribes to events from a KWS unit. When a keyword is detected, `main.cpp`'s `kws_awake` function is triggered. This function stops any ongoing TTS playback from a previously linked LLM/VLM (`superior_id_`) and then re-subscribes to that LLM/VLM. This implies an interrupt-and-resume flow rather than synthesizing the KWS event data itself.
-
-### Output Data (Synthesized Speech)
-
-Synthesized audio can be handled in two main ways:
-
-1.  **Direct Playback via `llm_audio` (`response_format` contains `"sys.pcm"` or `"sys"`, and `enaudio: true`)**
-    -   If `response_format` is set to `"sys.pcm"` (or any format string containing "sys") and `enaudio` is `true` (default is `true` in `main.cpp` if `enaudio` is not specified or true in the request), the generated PCM audio data is sent segment by segment to the `llm_audio` unit for immediate playback (using `audio->queue_play`).
-    -   This is the primary mode for direct auditory feedback.
-
-2.  **API Push of Audio Data (`enoutput: true`)**
-    -   If `enoutput` is `true`, the synthesized audio data (PCM) is Base64 encoded and pushed asynchronously to the client that initiated the task.
-    -   **Streaming Output (`response_format: "tts.pcm.base64.stream"`)**:
-        -   Audio is sent in chunks as they are synthesized.
-        -   JSON Structure per Chunk:
-            ```json
-            {
-              "request_id": "<original_inference_request_id>",
-              "work_id": "melotts.XXXX",
-              "action": "tts_audio_chunk", // Example conventional action name
-              "object": "tts.pcm.base64.stream",
-              "created": 1678886410,
-              "code": 0,
-              "message": "OK",
-              "data": {
-                "index": 0, // Sequence number of this audio chunk
-                "delta": "<Base64_encoded_PCM_audio_chunk>",
-                "finish": false // True for the very last chunk of the entire synthesis task
-              }
-            }
-            ```
-    -   **Non-Streaming Output (`response_format: "tts.pcm.base64"`)**:
-        -   The entire synthesized audio is sent as a single Base64 encoded string after the full input text (or final chunk with `finish: true`) has been processed.
-        -   JSON Structure:
-            ```json
-            {
-              "request_id": "<original_inference_request_id>",
-              "work_id": "melotts.XXXX",
-              "action": "tts_audio_full", // Example conventional action name
-              "object": "tts.pcm.base64",
-              "created": 1678886415,
-              "code": 0,
-              "message": "OK",
-              "data": "<Full_Base64_encoded_PCM_audio>"
-            }
-            ```
-    -   The `request_id` in these asynchronous messages corresponds to the `inference` API call that provided the text.
-
-## API Reference
-
-### **setup**
-
-Initializes and configures a new MeloTTS task instance.
-
--   **`work_id` in request**: `"melotts"`
--   **`work_id` in response (success)**: `"melotts.XXXX"` (e.g., `"melotts.1003"`)
-
-**Request Parameters:**
-
-| Parameter              | Type          | Required | Default (from Model JSON if applicable) | Description                                                                                                                                                                                                                            |
-|------------------------|---------------|----------|-----------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `object`               | string        | Yes      | N/A                                     | Must be `"melotts.setup"`.                                                                                                                                                                                                             |
-| `data.model`           | string        | Yes      | N/A                                     | Name of the MeloTTS model configuration file (without `.json`). Examples: `"melotts-en-us"`, `"melotts-ja-jp"`, `"melotts-zh-cn"`. Models are located in `projects/llm_framework/main_melotts/models/`.             |
-| `data.response_format` | string        | Yes      | N/A                                     | Defines how audio output is handled. `"sys.pcm"` (or any format containing "sys") enables direct playback via `llm_audio` if `enaudio` is true. Formats like `"tts.pcm.base64"` or `"tts.pcm.base64.stream"` enable API push of audio data if `enoutput` is also true. |
-| `data.input`           | string/array  | Yes      | N/A                                     | Input source(s) for text. Examples: `"tts.utf-8"` (for direct API input to this instance), `"llm.1002"` (to link to an LLM's output), `"kws.1000"`. See "Input Data" section.                                  |
-| `data.enoutput`        | boolean       | No       | `false`                                 | If `true`, enables asynchronous pushing of Base64 encoded PCM audio data to the client, according to `response_format`.                                                                                                       |
-| `data.enaudio`         | boolean       | No       | `true`                                  | If `true` and `response_format` indicates system audio (e.g., "sys.pcm"), plays synthesized audio via `llm_audio`. If `false`, audio is not played even if `response_format` is "sys.pcm".                                           |
-| `data.mode_param`      | object        | No       | {}                                      | Allows overriding specific parameters from the model's JSON, e.g., `{"spacker_speed": 1.2}`. Supported overrides depend on `main.cpp` implementation (currently `spacker_speed`, `audio_rate` are primarily loaded from model JSON for engine init). |
-
-**Request Example:**
-```json
-{
-  "request_id": "setup_melotts_001",
+  "request_id": "2",
   "work_id": "melotts",
   "action": "setup",
   "object": "melotts.setup",
   "data": {
     "model": "melotts-en-us",
-    "response_format": "sys.pcm", // Play audio directly
+    "response_format": "sys.pcm",
     "input": "tts.utf-8",
-    "enoutput": true, // Also send PCM data back to API caller (if response_format is tts.pcm.*)
-    "enaudio": true,   // Enable playback
-    "mode_param": {
-      "spacker_speed": 1.1 // Example of attempting to override a model parameter
+    "enoutput": false
+  }
+}
+```
+
+- request_id: Refer to the basic data explanation.
+- work_id: For configuration, it is `melotts`.
+- action: The method to be called is `setup`.
+- object: The data type being transmitted is `melotts.setup`.
+- model: The model being used is the English model `melotts-en-us`.
+- response_format: The result is returned as `sys.pcm`, system audio data, which is directly sent to the llm-audio
+  module for playback.
+- input: The input is `tts.utf-8`, representing user input.
+- enoutput: Whether to enable user result output.
+
+Response JSON:
+
+```json
+{
+  "created": 1731488402,
+  "data": "None",
+  "error": {
+    "code": 0,
+    "message": ""
+  },
+  "object": "None",
+  "request_id": "2",
+  "work_id": "melotts.1003"
+}
+```
+
+- created: Message creation time, UNIX time.
+- work_id: Successfully created work_id unit.
+
+## inference
+
+### streaming input
+
+```json
+{
+    "request_id": "2",
+    "work_id": "melotts.1003",
+    "action": "inference",
+    "object": "melotts.utf-8.stream",
+    "data": {
+        "delta": "What's ur name?",
+        "index": 0,
+        "finish": true
     }
-  }
+}
+```
+- object: The data type transmitted is melotts.utf-8.stream, indicating a streaming input from the user's UTF-8.
+- delta: Segment data of the streaming input.
+- index: Index of the segment in the streaming input.
+- finish: A flag indicating whether the streaming input has completed.
+
+### non-streaming input
+
+```json
+{
+    "request_id": "2",
+    "work_id": "melotts.1003",
+    "action": "inference",
+    "object": "melotts.utf-8",
+    "data": "What's ur name?"
 }
 ```
 
-**Response (Success):**
+- object: The data type transmitted is melotts.utf-8, indicating a non-streaming input from the user's UTF-8.
+- data: Data for non-streaming input.
+
+## link
+
+Link the output of the upper-level unit.
+
+Send JSON:
+
 ```json
 {
-  "request_id": "setup_melotts_001",
-  "work_id": "melotts.1003", // New TTS task instance ID
+  "request_id": "3",
+  "work_id": "melotts.1003",
+  "action": "link",
+  "object": "work_id",
+  "data": "kws.1000"
+}
+```
+
+Response JSON:
+
+```json
+{
+  "created": 1731488402,
+  "data": "None",
+  "error": {
+    "code": 0,
+    "message": ""
+  },
+  "object": "None",
+  "request_id": "3",
+  "work_id": "melotts.1003"
+}
+```
+
+error::code being 0 indicates success.
+
+Link the llm and melotts units. When the kws melotts unit stops the unfinished inference from the last time, it is used
+for repeated wake-up functionality.
+
+> **Ensure that kws is already configured and in working status during link. Link can also be performed during the setup
+stage.**
+
+Example:
+
+```json
+{
+  "request_id": "2",
+  "work_id": "melotts",
   "action": "setup",
-  "created": 1678886400,
-  "code": 0,
-  "message": "OK",
+  "object": "melotts.setup",
   "data": {
-    "work_id": "melotts.1003" // Confirms the created instance ID
+    "model": "melotts-en-us",
+    "response_format": "sys.pcm",
+    "input": [
+      "tts.utf-8",
+      "llm.1002",
+      "kws.1000"
+    ],
+    "enoutput": false
   }
 }
 ```
 
-### **inference**
+## unlink
 
-Submits text to a specific MeloTTS task instance for speech synthesis. The audio output is handled asynchronously based on `setup` configuration.
+Unlink.
 
--   **`work_id` in request**: `"melotts.XXXX"` (specific MeloTTS task instance ID)
+Send JSON:
 
-**Request Parameters:**
-
-| Parameter | Type          | Required | Default | Description                                                                                                                               |
-|-----------|---------------|----------|---------|-------------------------------------------------------------------------------------------------------------------------------------------|
-| `object`  | string        | Yes      | N/A     | Specifies the format of the input text: `"melotts.utf-8"` (for a single, complete text) or `"melotts.utf-8.stream"` (for a chunked text). |
-| `data`    | string/object | Yes      | N/A     | If `object` is `"melotts.utf-8"`, `data` is a string. If `object` is `"melotts.utf-8.stream"`, `data` is an object: `{"index": <int>, "delta": "<text_chunk>", "finish": <boolean>}`. |
-
-**Request Example (Non-streaming):**
 ```json
 {
-  "request_id": "infer_melotts_002",
-  "work_id": "melotts.1003",
-  "action": "inference",
-  "object": "melotts.utf-8",
-  "data": "Hello world, this is a test."
-}
-```
-
-**Response (Success - Request Accepted):**
-This response only confirms that the text has been received for synthesis.
-```json
-{
-  "request_id": "infer_melotts_002",
-  "work_id": "melotts.1003",
-  "action": "inference",
-  "created": 1678886402,
-  "code": 0,
-  "message": "OK"
-}
-```
-
-### **link**
-
-Links a MeloTTS task instance to an input source dynamically.
-
--   **`work_id` in request**: `"melotts.XXXX"`
-
-**Request Parameters:**
-
-| Parameter | Type   | Required | Default | Description                                                                    |
-|-----------|--------|----------|---------|--------------------------------------------------------------------------------|
-| `object`  | string | Yes      | N/A     | Typically `"work_id"` indicating the data field contains a unit ID to link to. |
-| `data`    | string | Yes      | N/A     | The `work_id` of the unit to link as an input source (e.g., `"llm.1002"`).      |
-
-**Request Example:**
-```json
-{
-  "request_id": "link_melotts_003",
-  "work_id": "melotts.1003",
-  "action": "link",
-  "object": "work_id",
-  "data": "llm.1002"
-}
-```
-
-**Response (Success):**
-```json
-{
-  "request_id": "link_melotts_003",
-  "work_id": "melotts.1003",
-  "action": "link",
-  "created": 1678886404,
-  "code": 0,
-  "message": "OK"
-}
-```
-
-### **unlink**
-
-Unlinks a previously linked input source from a MeloTTS task instance.
-
--   **`work_id` in request**: `"melotts.XXXX"`
-
-**Request Parameters:**
-
-| Parameter | Type   | Required | Default | Description                                                                        |
-|-----------|--------|----------|---------|------------------------------------------------------------------------------------|
-| `object`  | string | Yes      | N/A     | Typically `"work_id"` indicating the data field contains a unit ID to unlink.      |
-| `data`    | string | Yes      | N/A     | The `work_id` of the input source unit to unlink (e.g., `"llm.1002"`).             |
-
-**Request Example:**
-```json
-{
-  "request_id": "unlink_melotts_004",
+  "request_id": "4",
   "work_id": "melotts.1003",
   "action": "unlink",
   "object": "work_id",
-  "data": "llm.1002"
+  "data": "kws.1000"
 }
 ```
 
-**Response (Success):**
+Response JSON:
+
 ```json
 {
-  "request_id": "unlink_melotts_004",
-  "work_id": "melotts.1003",
-  "action": "unlink",
-  "created": 1678886405,
-  "code": 0,
-  "message": "OK"
+  "created": 1731488402,
+  "data": "None",
+  "error": {
+    "code": 0,
+    "message": ""
+  },
+  "object": "None",
+  "request_id": "4",
+  "work_id": "melotts.1003"
 }
 ```
 
-### **pause**
+error::code being 0 indicates success.
 
-Pauses the MeloTTS task instance. This typically stops further audio generation and playback.
+## pause
 
--   **`work_id` in request**: `"melotts.XXXX"`
+Pause the unit.
 
-**Request Example:**
+Send JSON:
+
 ```json
 {
-  "request_id": "pause_melotts_005",
-  "work_id": "melotts.1003",
+  "request_id": "5",
+  "work_id": "llm.1003",
   "action": "pause"
 }
 ```
 
-**Response (Success):**
+Response JSON:
+
 ```json
 {
-  "request_id": "pause_melotts_005",
-  "work_id": "melotts.1003",
-  "action": "pause",
-  "created": 1678886406,
-  "code": 0,
-  "message": "OK"
+  "created": 1731488402,
+  "data": "None",
+  "error": {
+    "code": 0,
+    "message": ""
+  },
+  "object": "None",
+  "request_id": "5",
+  "work_id": "llm.1003"
 }
 ```
 
-### **work**
+error::code being 0 indicates success.
 
-Resumes a paused MeloTTS task instance.
+## work
 
--   **`work_id` in request**: `"melotts.XXXX"`
+Resume the unit.
 
-**Request Example:**
+Send JSON:
+
 ```json
 {
-  "request_id": "work_melotts_006",
-  "work_id": "melotts.1003",
+  "request_id": "6",
+  "work_id": "llm.1003",
   "action": "work"
 }
 ```
 
-**Response (Success):**
+Response JSON:
+
 ```json
 {
-  "request_id": "work_melotts_006",
-  "work_id": "melotts.1003",
-  "action": "work",
-  "created": 1678886407,
-  "code": 0,
-  "message": "OK"
+  "created": 1731488402,
+  "data": "None",
+  "error": {
+    "code": 0,
+    "message": ""
+  },
+  "object": "None",
+  "request_id": "6",
+  "work_id": "llm.1003"
 }
 ```
 
-### **exit**
+error::code being 0 indicates success.
 
-Stops and removes a MeloTTS task instance, freeing its resources.
+## exit
 
--   **`work_id` in request**: `"melotts.XXXX"`
+Exit the unit.
 
-**Request Example:**
+Send JSON:
+
 ```json
 {
-  "request_id": "exit_melotts_007",
-  "work_id": "melotts.1003",
+  "request_id": "7",
+  "work_id": "llm.1003",
   "action": "exit"
 }
 ```
 
-**Response (Success):**
+Response JSON:
+
 ```json
 {
-  "request_id": "exit_melotts_007",
-  "work_id": "melotts.1003",
-  "action": "exit",
-  "created": 1678886408,
-  "code": 0,
-  "message": "OK"
+  "created": 1731488402,
+  "data": "None",
+  "error": {
+    "code": 0,
+    "message": ""
+  },
+  "object": "None",
+  "request_id": "7",
+  "work_id": "llm.1003"
 }
 ```
 
-### **taskinfo**
+error::code being 0 indicates success.
 
-Retrieves information about active MeloTTS tasks.
+## Task Information
 
-**Case 1: General Unit Information**
+Get task list.
 
--   **`work_id` in request**: `"melotts"`
--   **Description**: Returns a list of all active task instance IDs.
+Send JSON:
 
-**Request Example:**
 ```json
 {
-  "request_id": "taskinfo_melotts_general_008",
+  "request_id": "2",
   "work_id": "melotts",
   "action": "taskinfo"
 }
 ```
 
-**Response (Success):**
+Response JSON:
+
 ```json
 {
-  "request_id": "taskinfo_melotts_general_008",
-  "work_id": "melotts",
-  "action": "taskinfo",
-  "created": 1678886409,
-  "code": 0,
-  "message": "OK",
-  "object": "melotts.tasklist",
+  "created": 1731652311,
   "data": [
     "melotts.1003"
-  ]
+  ],
+  "error": {
+    "code": 0,
+    "message": ""
+  },
+  "object": "melotts.tasklist",
+  "request_id": "2",
+  "work_id": "melotts"
 }
 ```
 
-**Case 2: Specific Task Instance Information**
+Get task runtime parameters.
 
--   **`work_id` in request**: `"melotts.XXXX"`
--   **Description**: Returns runtime parameters of the specified task instance.
+Send JSON:
 
-**Request Example:**
 ```json
 {
-  "request_id": "taskinfo_melotts_specific_009",
+  "request_id": "2",
   "work_id": "melotts.1003",
   "action": "taskinfo"
 }
 ```
 
-**Response (Success):**
+Response JSON:
+
 ```json
 {
-  "request_id": "taskinfo_melotts_specific_009",
-  "work_id": "melotts.1003",
-  "action": "taskinfo",
-  "created": 1678886410,
-  "code": 0,
-  "message": "OK",
-  "object": "melotts.taskinfo",
+  "created": 1731652344,
   "data": {
+    "enoutput": false,
+    "inputs_": [
+      "tts.utf-8"
+    ],
     "model": "melotts-en-us",
-    "response_format": "sys.pcm",
-    "enoutput": false, // Reflects if API push of audio data is enabled
-    "enaudio": true,   // Reflects if direct playback is enabled
-    "inputs": ["tts.utf-8"]
-    // Note: speaker_speed, audio_rate etc. are part of the model's internal configuration
-    // and not typically listed in dynamic taskinfo unless explicitly made so.
-  }
+    "response_format": "sys.pcm"
+  },
+  "error": {
+    "code": 0,
+    "message": ""
+  },
+  "object": "melotts.taskinfo",
+  "request_id": "2",
+  "work_id": "melotts.1003"
 }
 ```
 
-## Relation to Model Configuration Files
-
-The `llm-melotts` unit relies on model-specific JSON configuration files (e.g., `mode_melotts-en-us.json`) located in the `projects/llm_framework/main_melotts/models/` directory or a system-wide model path.
-
-Key aspects of these model configuration files:
--   **`mode`**: Model name used in the `setup` API (e.g., `"melotts-en-us"`).
--   **`type`**: Unit type, typically `"tts"`.
--   **`capabilities`**: Describes function, e.g., `"tts"`, `"English"`.
--   **`mode_param` Object**: Contains core parameters for the MeloTTS engine:
-    -   `encoder`, `decoder`: Paths to the ONNX model files for text encoding and audio decoding (e.g., `"encoder-en.ort"`, `"decoder-en.axmodel"`). These are relative to the model's directory.
-    -   `gbin`: Path to the speaker embeddings file (e.g., `"g-en.bin"`).
-    -   `tokens`: Path to the character/token mapping file (e.g., `"tokens.txt"`).
-    -   `lexicon`: Path to the lexicon file for phonemization (e.g., `"lexicon.txt"`).
-    -   `spacker_speed` (float): Default speaking speed (e.g., `1.0`).
-    -   `mode_rate` (integer): Sample rate of the model's internal acoustic representation (e.g., `44100`).
-    -   `audio_rate` (integer): Target sample rate for the output audio (e.g., `16000`). Resampling is performed if this differs from `mode_rate`.
-    -   `awake_delay` (integer): Delay in milliseconds used when linked with KWS to avoid processing stale audio, default 1000ms.
-    -   Other parameters like `noise_scale`, `length_scale`, `sdp_ratio` control aspects of speech synthesis quality.
-
-These parameters are loaded when a task is set up with a specific model. While the `setup` API allows a `mode_param` field to potentially override these, the current `main.cpp` primarily loads these values from the model's JSON file during task initialization.
-
-## Important Notes
--   **Concurrency**: It's generally not recommended to run multiple instances of TTS units (e.g., two `llm-melotts` instances, or an `llm-melotts` and an `llm_tts` instance) simultaneously if they might compete for hardware resources like NPUs or audio output channels, as this could lead to errors or unexpected behavior.
--   **Audio Playback**: When `enaudio: true` and `response_format` indicates system audio (e.g., "sys.pcm"), the `llm-melotts` unit relies on the `llm_audio` unit for playback. Ensure `llm_audio` is functional.
--   **Text Segmentation**: The unit processes input text in segments, typically delimited by punctuation (commas, periods, question marks, exclamation marks). This allows for more responsive synthesis of longer texts.
+> **Note: work_id increases in the order of the unit's initialization registration and is not a fixed index value.**  
+> **The same type of unit cannot configure multiple units to work simultaneously, or unknown errors may occur. For
+example, tts and melo tts cannot be activated to work at the same time.**
